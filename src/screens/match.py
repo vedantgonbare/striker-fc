@@ -15,6 +15,7 @@ import pygame
 import math
 import random
 from src.core.base_screen import BaseScreen
+from src.core.sound_engine import SoundEngine
 from src.core.settings import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     WHITE, BLACK, GOLD, GOLD_LIGHT, ACCENT_CYAN,
@@ -402,6 +403,12 @@ class MatchScreen(BaseScreen):
 
         self.font_player = pygame.font.Font(None, 14)
 
+        # ── Sound ──
+        self.sfx = SoundEngine.get()
+        self.sfx.start_ambient()
+        self.sfx.kickoff_whistle()
+        self._last_ball_spd = 0.0
+
     # ── Setup ──────────────────────────────────────────────────────────────
     def _build_pitch_surface(self):
         self._pitch_surf = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -471,6 +478,7 @@ class MatchScreen(BaseScreen):
         for event in events:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    self.sfx.stop_ambient()
                     self.change_state(STATE_MAIN_MENU)
                 # Auto-switch to nearest player
                 if event.key in (pygame.K_z, pygame.K_x):
@@ -532,6 +540,7 @@ class MatchScreen(BaseScreen):
             self.ball.kick(dx_s, dy_s, KICK_POWER)
             cp.kick_cooldown = 0.5
             self.kicked_by_home = True
+            self.sfx.play("kick", channel=4)
 
         # ── Pass ──
         if keys[pygame.K_x] and cp.kick_cooldown <= 0:
@@ -548,6 +557,7 @@ class MatchScreen(BaseScreen):
                 self.ball.kick(dx_p, dy_p, PASS_POWER)
                 cp.kick_cooldown = 0.4
                 self.kicked_by_home = True
+                self.sfx.play("pass", channel=5)
 
         # Cooldowns
         for p in self.home_players:
@@ -587,6 +597,12 @@ class MatchScreen(BaseScreen):
         if vec_dist(cp.pos, self.ball.pos) > 250:
             self._switch_to_nearest()
 
+        # ── Ball bounce sound (wall hits) ──
+        cur_spd = math.sqrt(self.ball.vx**2 + self.ball.vy**2)
+        if self._last_ball_spd > 6 and cur_spd < self._last_ball_spd * 0.7:
+            self.sfx.play("bounce", channel=6)
+        self._last_ball_spd = cur_spd
+
         # ── Possession tracking ──
         if self.kicked_by_home:
             self.home_poss = self.home_poss * 0.998 + 100 * 0.002
@@ -604,12 +620,14 @@ class MatchScreen(BaseScreen):
             self.home_goals += 1
             self.goal_flash  = 255
             self.reset_timer = 2.5
+            self.sfx.goal_sequence()
 
         # Away scores (ball enters left goal)
         if bx < PX and goal_y_top < by < goal_y_bot:
             self.away_goals += 1
             self.goal_flash  = 255
             self.reset_timer = 2.5
+            self.sfx.goal_sequence()
 
     # ── Draw ──────────────────────────────────────────────────────────────
     def draw(self):

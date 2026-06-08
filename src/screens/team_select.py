@@ -18,6 +18,7 @@ from src.core.settings import (
     WHITE, BLACK, GREY_DARK, GREY_MID, GREY_LIGHT,
     STATE_MAIN_MENU, STATE_MATCH,
 )
+from src.core.sound_engine import SoundEngine
 
 # ── 20 Teams data ─────────────────────────────────────────────────────────────
 # Each: (name, short, primary_rgb, secondary_rgb, overall, pace, shoot, pass, defend, formation)
@@ -284,8 +285,9 @@ class TeamPanel:
 
 class TeamSelectScreen(BaseScreen):
 
-    def __init__(self, screen, change_state):
+    def __init__(self, screen, change_state, on_confirm=None):
         super().__init__(screen, change_state)
+        self._on_confirm = on_confirm   # callback(home_team, away_team)
         self._init_fonts()
         self.time = 0.0
 
@@ -358,8 +360,9 @@ class TeamSelectScreen(BaseScreen):
 
                 elif event.key == pygame.K_RETURN:
                     if self.home_panel.locked and self.away_panel.locked:
-                        self.change_state(STATE_MATCH)
+                        self._confirm_and_start()
                 elif event.key == pygame.K_ESCAPE:
+                    SoundEngine.get().play("ui_select")
                     self.change_state(STATE_MAIN_MENU)
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -374,14 +377,25 @@ class TeamSelectScreen(BaseScreen):
                 away_btn = pygame.Rect(
                     self.away_panel.x + self.away_panel.w//2 - 70, 650, 140, 36)
                 if home_btn.collidepoint(pos):
+                    SoundEngine.get().play("ui_select")
                     self.home_panel.toggle_lock()
                 if away_btn.collidepoint(pos):
+                    SoundEngine.get().play("ui_select")
                     self.away_panel.toggle_lock()
 
                 # Kick off
                 if self.kickoff_rect.collidepoint(pos):
                     if self.home_panel.locked and self.away_panel.locked:
-                        self.change_state(STATE_MATCH)
+                        self._confirm_and_start()
+
+    def _confirm_and_start(self):
+        SoundEngine.get().play("whistle", channel=1)
+        if self._on_confirm:
+            self._on_confirm(
+                TEAMS[self.home_panel.index],
+                TEAMS[self.away_panel.index],
+            )
+        self.change_state(STATE_MATCH)
 
     # ── Update ────────────────────────────────────────────────────────────────
     def update(self, dt):
