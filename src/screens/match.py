@@ -20,7 +20,7 @@ from src.core.settings import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     WHITE, BLACK, GOLD, GOLD_LIGHT, ACCENT_CYAN,
     DARK_BG, GREY_MID, GREY_LIGHT,
-    STATE_MAIN_MENU,
+    STATE_MAIN_MENU, STATE_HALF_TIME, STATE_FULL_TIME,
 )
 
 # ── Pitch constants ────────────────────────────────────────────────────────────
@@ -330,7 +330,8 @@ class HUD:
         self.font_sm    = pygame.font.Font(None, 22)
         self.font_md    = pygame.font.Font(None, 26)
 
-    def draw(self, home_goals, away_goals, elapsed_s, home_poss, flash_alpha=0):
+    def draw(self, home_goals, away_goals, elapsed_s, home_poss,
+             flash_alpha=0, current_half=1, half_duration=45.0):
         s   = self.screen
         w   = WINDOW_WIDTH
         bar = pygame.Surface((w, PY - 2), pygame.SRCALPHA)
@@ -350,10 +351,18 @@ class HUD:
         s.blit(hn, hn.get_rect(right=cx - 80, centery=PY//2))
         s.blit(an, an.get_rect(left =cx + 80, centery=PY//2))
 
-        # Clock
-        mins = int(elapsed_s // 60) % 90 + 1
-        clk  = self.font_md.render(f"{mins:02d}'", True, GOLD)
+        # Clock — map elapsed to in-game minutes
+        half_elapsed = elapsed_s - (half_duration if current_half == 2 else 0)
+        frac  = min(1.0, half_elapsed / half_duration)
+        mins  = int(frac * 45) + (45 if current_half == 2 else 0) + 1
+        mins  = min(mins, 90)
+        clk   = self.font_md.render(f"{mins:02d}'", True, GOLD)
         s.blit(clk, clk.get_rect(centerx=cx, centery=PY//2 + 18))
+
+        # Half indicator
+        half_lbl = self.font_sm.render(
+            f"{'1ST' if current_half == 1 else '2ND'} HALF", True, GREY_MID)
+        s.blit(half_lbl, half_lbl.get_rect(centerx=cx, top=4))
 
         # Possession bar
         bar_w = 200
@@ -420,10 +429,22 @@ class MatchScreen(BaseScreen):
         self.home_goals   = 0
         self.away_goals   = 0
         self.elapsed      = 0.0
-        self.goal_flash   = 0.0     # countdown flash timer
-        self.reset_timer  = 0.0     # pause after goal before reset
-        self.home_poss    = 50.0    # possession %
-        self.poss_frames  = 0
+        self.goal_flash   = 0.0
+        self.reset_timer  = 0.0
+        self.home_poss    = 50.0
+
+        # ── Match flow ──
+        # Each half = 45 real-seconds (fast arcade pace)
+        self.half_duration   = 45.0       # seconds per half
+        self.current_half    = 1
+        self.half_triggered  = False      # prevent double-trigger
+        self.match_over      = False
+
+        # ── Stats tracking ──
+        self.home_shots   = 0
+        self.away_shots   = 0
+        self.all_scorers  = []            # list of "Team name (min')"
+        self.first_scorers = []           # first-half scorers only
 
         # Build players
         home_pos = make_team_positions("left")
@@ -462,6 +483,35 @@ class MatchScreen(BaseScreen):
             p.x, p.y = away_pos[i]; p.sx, p.sy = away_pos[i]
             p.vx = p.vy = 0
 
+    def _build_match_data(self):
+        return {
+            "home_team":     self.home_data,
+            "away_team":     self.away_data,
+            "home_goals":    self.home_goals,
+            "away_goals":    self.away_goals,
+            "home_poss":     self.home_poss,
+            "home_shots":    self.home_shots,
+            "away_shots":    self.away_shots,
+            "all_scorers":   self.all_scorers,
+            "first_scorers": self.first_scorers,
+        }
+
+    def _go_half_time(self):
+        self.sfx.stop_ambient()
+        self.sfx.kickoff_whistle()
+        self.first_scorers = list(self.all_scorers)
+        # Store data for half time screen, then switch
+        from src.screens.half_time import HalfTimeScreen
+        # Pass data via change_state callback — game.py stores it
+        self._match_data_snapshot = self._build_match_data()
+        self.change_state(STATE_HALF_TIME)
+
+    def _go_full_time(self):
+        self.sfx.stop_ambient()
+        self.sfx.kickoff_whistle()
+        self._match_data_snapshot = self._build_match_data()
+        self.change_state(STATE_FULL_TIME)
+
     # ── Nearest player switch ──────────────────────────────────────────────
     def _switch_to_nearest(self):
         best, best_d = 1, 9999
@@ -480,12 +530,14 @@ class MatchScreen(BaseScreen):
                 if event.key == pygame.K_ESCAPE:
                     self.sfx.stop_ambient()
                     self.change_state(STATE_MAIN_MENU)
-                # Auto-switch to nearest player
                 if event.key in (pygame.K_z, pygame.K_x):
                     self._switch_to_nearest()
 
     # ── Update ────────────────────────────────────────────────────────────
     def update(self, dt):
+        if self.match_over:
+            return
+
         if self.reset_timer > 0:
             self.reset_timer -= dt
             if self.reset_timer <= 0:
@@ -495,6 +547,19 @@ class MatchScreen(BaseScreen):
 
         self.elapsed += dt
         self.goal_flash = max(0, self.goal_flash - dt * 80)
+
+        # ── Half time / Full time triggers ──
+        if not self.half_triggered:
+            if self.current_half == 1 and self.elapsed >= self.half_duration:
+                self.half_triggered = True
+                self.match_over     = True
+                self._go_half_time()
+                return
+            if self.current_half == 2 and self.elapsed >= self.half_duration * 2:
+                self.half_triggered = True
+                self.match_over     = True
+                self._go_full_time()
+                return
 
         keys = pygame.key.get_pressed()
         cp   = self.home_players[self.controlled_idx]
@@ -541,6 +606,7 @@ class MatchScreen(BaseScreen):
             cp.kick_cooldown = 0.5
             self.kicked_by_home = True
             self.sfx.play("kick", channel=4)
+            self.home_shots += 1
 
         # ── Pass ──
         if keys[pygame.K_x] and cp.kick_cooldown <= 0:
@@ -621,6 +687,8 @@ class MatchScreen(BaseScreen):
             self.goal_flash  = 255
             self.reset_timer = 2.5
             self.sfx.goal_sequence()
+            mins = int(self.elapsed / self.half_duration * 45) + (45 if self.current_half == 2 else 0)
+            self.all_scorers.append(f"{self.home_data[0]} {mins}'")
 
         # Away scores (ball enters left goal)
         if bx < PX and goal_y_top < by < goal_y_bot:
@@ -628,6 +696,8 @@ class MatchScreen(BaseScreen):
             self.goal_flash  = 255
             self.reset_timer = 2.5
             self.sfx.goal_sequence()
+            mins = int(self.elapsed / self.half_duration * 45) + (45 if self.current_half == 2 else 0)
+            self.all_scorers.append(f"{self.away_data[0]} {mins}'")
 
     # ── Draw ──────────────────────────────────────────────────────────────
     def draw(self):
@@ -645,4 +715,6 @@ class MatchScreen(BaseScreen):
 
         # HUD
         self.hud.draw(self.home_goals, self.away_goals,
-                      self.elapsed, self.home_poss, self.goal_flash)
+                      self.elapsed, self.home_poss, self.goal_flash,
+                      current_half=self.current_half,
+                      half_duration=self.half_duration)
